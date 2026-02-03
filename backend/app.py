@@ -1,87 +1,108 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 
-from model_backend import recommend_colleges, df_final, le_community, le_branch
+from model_backend import recommend_colleges, df_final
 
 st.set_page_config(page_title="TNEA College Recommendation", layout="wide")
 
 st.title("🎓 TNEA College Recommendation System")
 
-if df_final is None:
-    st.error("Data not loaded. Make sure tnea*.csv files are in this folder.")
+st.markdown(
+    "This system predicts **expected TNEA cutoffs** using historical data and "
+    "categorizes colleges into **Dream, Ambitious, and Safe** options."
+)
+
+if df_final is None or df_final.empty:
+    st.error("Dataset not loaded.")
     st.stop()
 
-st.markdown("Enter your **cutoff**, select your **community**, and choose preferred **departments (branches)**.")
+# ===================== SIDEBAR =====================
+with st.sidebar:
+    st.header("Student Details")
 
-# ---------- INPUTS ----------
-# Cutoff
-user_cutoff = st.number_input(
-    "Cutoff (out of 200)",
-    min_value=0.0,
-    max_value=200.0,
-    step=0.25,
-    value=180.0,
-)
+    user_cutoff = st.number_input(
+        "Cutoff (out of 200)",
+        min_value=0.0,
+        max_value=200.0,
+        value=180.0,
+        step=0.25
+    )
 
-# Community options from the data (e.g., OC, BC, MBC, etc.)
-community_options = sorted(df_final["Community"].unique().tolist())
-user_community = st.selectbox("Community", community_options)
+    community = st.selectbox(
+        "Community",
+        sorted(df_final["Community"].unique())
+    )
 
-# Department options – use Branch Code (CS, IT, EC, etc.)
-branch_options = sorted(df_final["Branch Code"].unique().tolist())
-default_branches = ["CS"] if "CS" in branch_options else []
-user_branches = st.multiselect(
-    "Preferred Departments (Branch Codes)",
-    branch_options,
-    default=default_branches,
-    help="Example: CS, IT, EC, ME, CE..."
-)
+    branches = st.multiselect(
+        "Preferred Branches (Optional)",
+        sorted(df_final["Branch Name"].unique())
+    )
 
-st.write("---")
+    submit = st.button("🔍 Get Recommendations")
 
-# ---------- SUBMIT BUTTON ----------
-if st.button("🔍 Get Recommendations"):
-    if not user_branches:
-        st.warning("Please select at least one department.")
+# ===================== RESULTS =====================
+if submit:
+    dream, ambitious, safe, error = recommend_colleges(
+        user_cutoff, community, branches
+    )
+
+    if error:
+        st.error(error)
     else:
-        dream_df, ambitious_df, safe_df, error_msg = recommend_colleges(
-            user_cutoff=user_cutoff,
-            user_community=user_community,
-            user_branches=user_branches
-        )
+        with st.expander("ℹ️ How are categories decided?"):
+            st.write(
+                """
+                • **Dream** – Colleges where predicted cutoff is higher than your score  
+                • **Ambitious** – Colleges close to your cutoff  
+                • **Safe** – Colleges where your cutoff is much higher  
+                """
+            )
 
-        if error_msg:
-            st.error(error_msg)
-        else:
-            # Show results in three columns
-            col1, col2, col3 = st.columns(3)
+        col1, col2, col3 = st.columns(3)
 
-            with col1:
-                st.subheader("🔴 Dream Colleges")
-                if dream_df is None or dream_df.empty:
-                    st.info("No dream colleges found for the given input.")
-                else:
-                    st.dataframe(
-                        dream_df.head(20).reset_index(drop=True),
-                        use_container_width=True
-                    )
+        with col1:
+            st.subheader("🔴 Dream Colleges")
+            if dream.empty:
+                st.info(
+                    "No dream colleges found. "
+                    "Your cutoff is high compared to predicted cutoffs."
+                )
+            else:
+                st.dataframe(dream, use_container_width=True)
 
-            with col2:
-                st.subheader("🟠 Ambitious / Likely")
-                if ambitious_df is None or ambitious_df.empty:
-                    st.info("No ambitious colleges found for the given input.")
-                else:
-                    st.dataframe(
-                        ambitious_df.head(20).reset_index(drop=True),
-                        use_container_width=True
-                    )
+        with col2:
+            st.subheader("🟠 Ambitious Colleges")
+            if ambitious.empty:
+                st.info("No ambitious colleges for this cutoff.")
+            else:
+                st.dataframe(ambitious, use_container_width=True)
 
-            with col3:
-                st.subheader("🟢 Safe Colleges")
-                if safe_df is None or safe_df.empty:
-                    st.info("No safe colleges found for the given input.")
-                else:
-                    st.dataframe(
-                        safe_df.head(20).reset_index(drop=True),
-                        use_container_width=True
-                    )
+        with col3:
+            st.subheader("🟢 Safe Colleges")
+            if safe.empty:
+                st.info("No safe colleges found.")
+            else:
+                st.dataframe(safe, use_container_width=True)
+
+        # ===================== GRAPH =====================
+        st.subheader("📊 Predicted Cutoff Comparison")
+
+        graph_df = pd.concat([
+            dream.assign(Category="Dream"),
+            ambitious.assign(Category="Ambitious"),
+            safe.assign(Category="Safe")
+        ])
+
+        if not graph_df.empty:
+            chart = alt.Chart(graph_df).mark_bar().encode(
+                x=alt.X("College Name:N", sort="-y"),
+                y="Predicted_Cutoff:Q",
+                color="Category:N",
+                tooltip=["College Name", "Branch Name", "Predicted_Cutoff"]
+            ).properties(
+                width=900,
+                height=400
+            )
+
+            st.altair_chart(chart, use_container_width=True)
